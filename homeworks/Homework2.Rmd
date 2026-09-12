@@ -1,0 +1,519 @@
+---
+title: "Homework 2: Your First Regression Model Pipeline in R"
+subtitle: "Abigail Kreuser"
+output: html_document
+---
+
+## Learning Goals
+
+By the end of this assignment, you will be able to:
+
+1. Frame a scientific prediction task as a supervised machine learning regression problem.
+2. Separate predictors from a numeric target variable.
+3. Split data into training and testing sets without leaking test information into model fitting.
+4. Build a reproducible preprocessing and modeling workflow using a `tidymodels` workflow.
+5. Evaluate a regression model using MAE, RMSE, and R².
+6. Interpret model performance and limitations in a scientific context.
+
+## Dataset
+
+We will use the **Palmer Penguins** dataset, which contains size measurements, clutch observations, and related field metadata for adult foraging Adelie, Chinstrap, and Gentoo penguins observed near Palmer Station in the Palmer Archipelago, Antarctica. The dataset was collected by Dr. Kristen Gorman and the Palmer Station Long Term Ecological Research Program.
+
+**Regression task:** predict penguin body mass in grams from anatomical measurements and field metadata.
+
+Dataset reference: Palmer Station LTER and Gorman (2020), Environmental Data Initiative.
+
+## Submission Instructions
+
+Submit a completed R Markdown document with:
+
+- All code chunks executed in order.
+- Written answers in the reflection prompts.
+- At least one model workflow that runs successfully.
+- One short interpretation of model performance in environmental or marine science terms.
+
+## 0. Setup
+
+Run the chunk below. If a package is missing, install it in your environment before continuing.
+
+```{r setup}
+# Run this once if the packages are not installed.
+# install.packages("tidymodels")
+```
+
+```{r libraries}
+library(tidymodels)
+library(tidyverse)
+
+set.seed(42)
+tidymodels_prefer()
+
+options(dplyr.width = Inf)
+
+regression_metrics <- metric_set(mae, rmse, rsq_trad)
+```
+
+## 1. Load the Data
+
+```{r load-data}
+data_url <- "https://raw.githubusercontent.com/allisonhorst/palmerpenguins/main/inst/extdata/penguins.csv"
+
+penguins <- read_csv(data_url, show_col_types = FALSE)
+
+penguins
+```
+
+### Exercise 1: Initial Inspection
+
+Use R to answer the following questions:
+
+1. How many rows and columns are in the dataset?
+**344**
+2. Which columns are numeric? **bill length, bill depth, flipper length, body mass, year**
+Which are categorical? **species, island, sex**
+3. How many missing values are present in each column? 
+**sex: 11, bill_length_mm: 2, bill_depth_mm: 2, flipper_length_mm: 2, body_mass_g: 2** 
+
+4. What is the range of the target variable, `body_mass_g`?
+**min 2700g and max 6300g**
+```{r exercise-1-shape}
+# TODO: Inspect the dimensions of the dataframe.
+dim(penguins)
+glimpse(penguins)
+
+
+```
+
+```{r exercise-1-types-missing}
+# TODO: Inspect column names, data types, and missing values.
+cat("\nMissing values per column:\n")
+colSums(is.na(penguins)) %>% sort(decreasing = TRUE)
+
+```
+
+```{r exercise-1-target}
+# TODO: Summarize the target variable body_mass_g.
+range(penguins$body_mass_g, na.rm = TRUE)
+table(penguins$species)
+table(penguins$species, penguins$island)
+table(penguins$species, penguins$year)
+
+```
+
+Write 2-4 sentences interpreting the dataset. Consider whether this is a large or small dataset and what kinds of scientific uncertainty or sampling limitations might matter.
+
+**Your answer: I would say this is a small dataset in the machine learning realm. There are three species so that makes the dataset seem even smaller if the species are not comparable since there are only 68 Chinstrap penguins measured. Sampling limitations could be due to the ability to catch and measure enough penguins to establish a relationship between measurements. The data is across 3 years so the mass of penguins in relation to their other morphometric measurements might vary across years or even in shorter time scales (i.e., just returned from foraging or about to go foraging).**
+
+## 2. Define a Regression Problem
+
+Our target variable is `body_mass_g`, a continuous numeric measurement. We will predict it from a mix of numeric and categorical predictors.
+
+To avoid a circular prediction task, do **not** use `body_mass_g` as an input feature.
+
+```{r define-problem}
+target <- "body_mass_g"
+
+# We drop rows where the target is missing because supervised learning requires known labels.
+penguins_model <- penguins |>
+  filter(!is.na(body_mass_g))
+
+predictor_data <- penguins_model |>
+  select(-body_mass_g)
+
+target_data <- penguins_model |>
+  select(body_mass_g)
+
+dim(predictor_data)
+dim(target_data)
+
+predictor_data
+```
+
+### Exercise 2: Scientific Framing
+
+In 3-5 sentences, describe this prediction task in scientific language. For example:
+
+- What are we trying to estimate?
+- What kinds of measurements might be informative predictors?
+
+**Your answer: We are trying to estimate the body mass of penguins in relation to their species and morphmetric measurements, which include bill length, bill depth, flipper length, as well as using categorical information like species, island, and sex to inform our model. The body measurements are likely the most informative because bigger penguins likely hold more mass.** 
+
+## 3. Split into Training and Test Sets
+
+The model will learn from the training set. The test set will be held aside until final evaluation.
+
+This split helps us estimate how well the model may perform on new observations that were not used during model fitting.
+
+```{r train-test-split}
+set.seed(42)
+
+penguin_split <- initial_split(
+  penguins_model,
+  prop = 0.80,
+  strata = body_mass_g
+)
+
+penguins_train <- training(penguin_split)
+penguins_test <- testing(penguin_split)
+
+dim(penguins_train)
+dim(penguins_test)
+```
+
+### Exercise 3: Why Split the Data?
+
+In 2-3 sentences, explain why evaluating on the same data used for training can give an overly optimistic estimate of model performance.
+
+**Your answer: We need to withold data to accurately test the model because the model would have already incorporated that data into its fit. Testing with data already in the model should have a strong fit, and we wouldn't be able to know how well the model captures the relationship of the data.**
+
+## 4. Identify Numeric and Categorical Predictors
+
+A model workflow lets us apply different preprocessing steps to different column types.
+
+For this dataset:
+
+- Numeric columns can be imputed and scaled.
+- Categorical columns can be imputed and one-hot encoded.
+
+```{r predictor-types}
+# TODO: Double check that these make sense based on column data types you saw above.
+numeric_features <- penguins_train |>
+  select(-body_mass_g) |>
+  select(where(is.numeric)) |>
+  names()
+
+categorical_features <- penguins_train |>
+  select(-body_mass_g) |>
+  select(where(function(x) !is.numeric(x))) |>
+  names()
+
+numeric_features
+categorical_features # yes but maybe year should be categorical ????
+```
+
+## 5. Build Preprocessing Steps
+
+The `recipe` below keeps preprocessing inside the model workflow. This is important because preprocessing should be learned from the training data only, then applied consistently to the test data. We will use median and mode for imputation for convienence, but we know that this is probably not the best imputation stratigy for this.
+
+```{r preprocessing-recipe}
+penguin_recipe <- recipe(body_mass_g ~ ., data = penguins_train) |>
+  step_impute_median(all_numeric_predictors()) |>
+  step_impute_mode(all_nominal_predictors()) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_normalize(all_numeric_predictors())
+
+penguin_recipe
+```
+
+### Exercise 4: Explain the Preprocessing
+
+Briefly explain what each preprocessing step does:
+
+1. `step_impute_median()`
+2. `step_impute_mode()`
+3. `step_dummy()`
+4. `step_normalize()`
+
+**Your answer: (1) for numeric vairables that are missing they are replaced with the median, (2) for categorical varibales that are missing they are replaced with the mode, (3) for categorical variables extra columns are made to be 1's and 0's so the categorical information is there, but as a binary ratehr than mulitple groups, (4) normalize numerical data so that the mean is centered at 0, with a SD of 1** 
+
+## 6. Build and Train a Baseline Model
+
+Before training a real model, we need a simple baseline. Here, the baseline always predicts the mean body mass from the training data.
+
+A useful model should perform better than this simple benchmark.
+
+```{r baseline-model}
+baseline_mean <- mean(penguins_train$body_mass_g, na.rm = TRUE)
+
+baseline_predictions <- penguins_test |>
+  mutate(.pred = baseline_mean)
+
+baseline_metrics <- baseline_predictions |>
+  regression_metrics(truth = body_mass_g, estimate = .pred)
+
+baseline_metrics
+```
+
+## 7. Build and Train Your First Regression Workflow
+
+Now we combine preprocessing and a regression model into one workflow.
+
+This is the central pattern for many applied machine learning workflows:
+
+```text
+raw data -> preprocessing -> model -> predictions
+```
+
+```{r linear-workflow}
+linear_model <- linear_reg() |>
+  set_engine("lm")
+
+linear_workflow <- workflow() |>
+  add_recipe(penguin_recipe) |>
+  add_model(linear_model)
+
+linear_fit <- fit(linear_workflow, data = penguins_train)
+
+linear_fit
+```
+
+## 8. Evaluate the Model on the Test Set
+
+We will use three common regression metrics:
+
+- **MAE**: mean absolute error, in grams. Easy to interpret.
+- **RMSE**: root mean squared error, in grams. Penalizes larger errors more strongly.
+- **R²**: proportion of variance explained relative to a mean-prediction baseline.
+
+```{r test-set-evaluation}
+linear_predictions <- predict(linear_fit, new_data = penguins_test) |>
+  bind_cols(penguins_test)
+
+linear_metrics <- linear_predictions |>
+  regression_metrics(truth = body_mass_g, estimate = .pred)
+
+linear_metrics
+```
+
+### Exercise 5: Compare Against the Baseline
+
+In 3-5 sentences, compare the linear regression workflow to the baseline model. Address the following:
+
+1. Did the model improve over the baseline?
+2. Which metric is easiest for you to interpret scientifically? 
+3. Is the error small or large relative to the observed range of body mass?
+
+**Your answer: Yes it seems like the model drastically improved from the baseline looking at the  R squared. R squared is the easiest for me to interpret scientifically because I have a reference in my mind for numbers being close to 1 as good. A "smaller" mse or rmse feels very subjective, and I don't know if I immediately know what I consider a better model. If I have expertise to reference like 300g makes a difference in survival to the next year, I could estimate the confidence I have in the model.** 
+
+## 9. Visualize Predictions and Residuals
+
+Plots help reveal model behavior that summary metrics can hide.
+
+```{r observed-vs-predicted}
+ggplot(linear_predictions, aes(x = body_mass_g, y = .pred)) +
+  geom_point(alpha = 0.8) +
+  geom_abline(linetype = "dashed") +
+  labs(
+    x = "Observed body mass (g)",
+    y = "Predicted body mass (g)",
+    title = "Observed vs. Predicted Penguin Body Mass"
+  ) +
+  theme_minimal()
+```
+
+```{r residual-plot}
+linear_predictions <- linear_predictions |>
+  mutate(residual = body_mass_g - .pred)
+
+ggplot(linear_predictions, aes(x = .pred, y = residual)) +
+  geom_point(alpha = 0.8) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    x = "Predicted body mass (g)",
+    y = "Residual: observed - predicted (g)",
+    title = "Residual Plot"
+  ) +
+  theme_minimal()
+```
+
+### Exercise 6: Interpret the Plots
+
+In 4-6 sentences, describe what you see. Consider:
+
+- Are predictions close to the 1:1 line?
+- Are residuals centered around zero?
+- Are there outliers or patterns?
+- What might these patterns imply about model assumptions or missing predictors?
+
+**Your answer: The predictions are very close to the 1:1 line, and the residuals are centered around 0. The residuals seem evenly distributed across weight types, for the most part with tighter distrbution past ~5200 grams. There are a couple penguins in the 4000 and 5000 g range that have the largest difference in residuals. This might suggest midrange and lighter penguins are missing information or the relationship of the features is not the same for lighter penguins**
+
+## 10. Use Cross-Validation on the Training Set
+
+A single train/test split can be sensitive to which observations end up in each set. Cross-validation gives a more stable estimate of model performance by repeatedly fitting and evaluating the model on different training/validation folds.
+
+Important: cross-validation below is run only on the training data. The test set remains reserved for final evaluation.
+
+```{r cross-validation}
+set.seed(42)
+
+penguin_folds <- vfold_cv(
+  penguins_train,
+  v = 5,
+  strata = body_mass_g
+)
+
+cv_results <- fit_resamples(
+  linear_workflow,
+  resamples = penguin_folds,
+  metrics = regression_metrics,
+  control = control_resamples(save_pred = TRUE)
+)
+
+collect_metrics(cv_results)
+```
+
+```{r cross-validation-folds}
+collect_metrics(cv_results, summarize = FALSE)
+```
+
+### Exercise 7: Cross-Validation Interpretation
+
+In 2-4 sentences, compare the cross-validation results to the final test-set results. Are they broadly similar? What would it mean if they were very different?
+
+**Your answer: The cross validation results are broadly similar to the final test-set results ranging from 200-315 for mae and rmse and 0.84-0.88 for R squared. If they were different it would likely mean our test data was not a great represntation of the data set, and we would need to start over with a new split. If our final test-set results were much higher than these, it could mean there was data leakage** 
+
+## 11. Modify the Feature Set
+
+Choose one of the following experiments:
+
+A. Remove categorical variables and use only anatomical measurements.  
+B. Remove `species` and test whether the model still performs well.  
+C. Use only field metadata such as `island`, `species`, `sex`, and `year`.  
+D. Add your own features, such as `bill_length_mm / flipper_length_mm`.  
+
+Record what you changed and whether performance improved, declined, or stayed similar.
+
+```{r modify-feature-set}
+# TODO: Modify the feature set and evaluate your experiment.
+penguins_model <- penguins_model |>
+  select(-c(island, species, sex))
+
+predictor_data <- penguins_model |>
+  select(-body_mass_g)
+
+target_data <- penguins_model |>
+  select(body_mass_g)
+
+dim(predictor_data)
+dim(target_data)
+
+predictor_data
+
+## split data 
+set.seed(42)
+
+penguin_split <- initial_split(
+  penguins_model,
+  prop = 0.80,
+  strata = body_mass_g
+)
+
+penguins_train <- training(penguin_split)
+penguins_test <- testing(penguin_split)
+
+dim(penguins_train)
+dim(penguins_test)
+
+# build recipe and there should be no nominal predictors 
+penguin_recipe <- recipe(body_mass_g ~ ., data = penguins_train) |>
+  step_impute_median(all_numeric_predictors()) |>
+  # step_impute_mode(all_nominal_predictors()) |>
+  # step_dummy(all_nominal_predictors()) |>
+  step_normalize(all_numeric_predictors())
+
+penguin_recipe
+
+# get baseline metrics 
+baseline_mean <- mean(penguins_train$body_mass_g, na.rm = TRUE)
+
+baseline_predictions <- penguins_test |>
+  mutate(.pred = baseline_mean)
+
+baseline_metrics <- baseline_predictions |>
+  regression_metrics(truth = body_mass_g, estimate = .pred)
+
+baseline_metrics # is this the same as before?? 
+
+### build linear model 
+
+linear_model <- linear_reg() |>
+  set_engine("lm")
+
+linear_workflow <- workflow() |>
+  add_recipe(penguin_recipe) |>
+  add_model(linear_model)
+
+linear_fit <- fit(linear_workflow, data = penguins_train)
+
+linear_fit
+
+### evaluate model with test set 
+linear_predictions <- predict(linear_fit, new_data = penguins_test) |>
+  bind_cols(penguins_test)
+
+linear_metrics <- linear_predictions |>
+  regression_metrics(truth = body_mass_g, estimate = .pred)
+
+linear_metrics
+
+ggplot(linear_predictions, aes(x = body_mass_g, y = .pred)) +
+  geom_point(alpha = 0.8) +
+  geom_abline(linetype = "dashed") +
+  labs(
+    x = "Observed body mass (g)",
+    y = "Predicted body mass (g)",
+    title = "Observed vs. Predicted Penguin Body Mass"
+  ) +
+  theme_minimal()
+
+linear_predictions <- linear_predictions |>
+  mutate(residual = body_mass_g - .pred)
+
+ggplot(linear_predictions, aes(x = .pred, y = residual)) +
+  geom_point(alpha = 0.8) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    x = "Predicted body mass (g)",
+    y = "Residual: observed - predicted (g)",
+    title = "Residual Plot"
+  ) +
+  theme_minimal()
+
+
+set.seed(42)
+
+penguin_folds <- vfold_cv(
+  penguins_train,
+  v = 5,
+  strata = body_mass_g
+)
+
+cv_results <- fit_resamples(
+  linear_workflow,
+  resamples = penguin_folds,
+  metrics = regression_metrics,
+  control = control_resamples(save_pred = TRUE)
+)
+
+collect_metrics(cv_results)
+collect_metrics(cv_results, summarize = FALSE)
+
+```
+
+**Notes: I chose to option A to only use anatomical measurements. Performance declined by all metrics, MAE; 315, RSME: 386, and R squared 0.75. Seems to still be a decent model overall in the ecological sense.** 
+
+## 12. Final Reflection
+
+Answer the following in a short paragraph or two:
+
+1. What is one advantage of using a workflow for applied scientific machine learning?
+2. What is one risk or limitation of this model?
+3. What additional data might improve predictions of penguin body mass?
+4. How could a similar workflow be used in geology, environmental science, or marine science?
+
+**Your final reflection: The workflow of applied scientific machine learning seems to provide strong and accurate predictions compared to a baseline model. The risks and limitations of these models, is that if we want to understand how these metrics are related or how imporant their influence is, it seems harder to tease apart. For example, with species and sex removed, I thought the model would perform much worse without that information, but it was comparably decent to the original model. Another limitation is this model may be too simple especially with size of the dataset with only 300 observations, I would be concerned the model may not be able to accurately represent another 300 observations of penguins in recent years. Additional data that may improve predictions of data mass, would be environmental data related to prey or oceanographic conditions, or another measurement like total length of the penguins body could be useful. A linear regression model could be used to map the arrival dates of whales into a foraging habitat in relation to environmental variables like sea surface temperature, bottom temperature, and chlorophyl-a.** 
+
+## Rubric
+
+| Component | Points |
+|---|---:|
+| Data loading and inspection completed | 1 |
+| Regression task clearly framed | 2 |
+| Train/test split and feature/target separation correct | 1 |
+| Preprocessing workflow implemented correctly | 3 |
+| Baseline and regression model evaluated with appropriate metrics | 3 |
+| Plots generated and interpreted | 3 |
+| Cross-validation completed and interpreted | 3 |
+| Modified feature set | 6 |
+| Final reflection connects ML workflow to Earth/environmental/marine science | 3 |
+| **Total** | **25** |

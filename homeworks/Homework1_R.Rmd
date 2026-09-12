@@ -1,0 +1,302 @@
+---
+title: "Homework 1"
+subtitle: "Abby Kreuser"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+```{r packages}
+library(tidyverse)
+library(lubridate)
+```
+
+## Warm up
+
+Given the vector below:
+
+```{r quiz-scores}
+quiz_scores <- c(78, 85, 92, 67, 88, 95, 73, 84)
+```
+
+Write R code to:
+
+1.  Print the first score.
+2.  Print the last score.
+3.  Calculate the average score.
+4.  Create a new vector containing only scores greater than or equal to 80.
+5.  Count how many students scored below 80.
+
+```{r warm-up-answers}
+print(paste("1.", quiz_scores[1]))
+print(paste("2.", quiz_scores[length(quiz_scores)]))
+print(paste("3.", mean(quiz_scores)))
+below_80 <- quiz_scores[quiz_scores < 80]
+below_80 <- paste(below_80)
+print(paste("4. below 80:",paste(below_80, collapse = " ")))
+print(paste("5.", length(below_80)))
+
+```
+
+Write a function called `letter_grade()` that takes a numeric score and returns:
+
+| Score Range | Grade |
+|:------------|:------|
+| 90 or above | A     |
+| 80–89       | B     |
+| 70–79       | C     |
+| 60–69       | D     |
+| Below 60    | F     |
+
+Example:
+
+``` r
+letter_grade(92)
+```
+
+Expected output:
+
+``` r
+[1] "A"
+```
+
+```{r letter-grade-function}
+letter_grade<-function(score){
+if(score >= 90){
+    return("A")
+  }
+  if(score >= 80 & score <90){
+    return("B")
+  }
+   if(score >= 70 & score <80){
+    return("C")
+  }
+  if(score >= 60 & score <70){
+    return("D")
+  }
+   if(score < 60){
+    return("F")
+  }
+}
+  
+
+```
+
+Then:
+
+7.  Create a data frame using the `quiz_scores` vector.
+8.  Create a new column named `Letter_Grade` by applying the `letter_grade()` function.
+
+```{r quiz-data-frame}
+quiz_scores_df <- as.data.frame(quiz_scores)
+Letter_Grade <- sapply(quiz_scores, letter_grade)
+quiz_scores_df <- cbind(quiz_scores_df, Letter_Grade)
+```
+
+Add the following vector as a column named `HoursOfStudy`:
+
+```{r study-hours}
+study_hours <- c("1", "1.5", "2.5", "0", "1", "1.5", "0.5", "1")
+quiz_scores_df <- cbind(quiz_scores_df, study_hours )
+colnames(quiz_scores_df)[3] <- "HoursOfStudy"
+
+```
+
+Once you create the column, do the following:
+
+9.  Change the column to numeric.
+10. Create a plot using `HoursOfStudy` and `quiz_scores`.
+11. Make the plot look polished and readable.
+
+```{r study-hours-plot}
+quiz_scores_df$HoursOfStudy <- as.numeric(quiz_scores_df$HoursOfStudy)
+
+ggplot()+
+  geom_point(data=quiz_scores_df, aes(x=HoursOfStudy, y=quiz_scores))+
+  #ylim(c(60,100), )+
+  scale_y_continuous(limits=c(60,100), expand=c(0.001))+
+  ylab("Quiz scores")+
+  xlab("Hours of study")+
+  theme_bw()
+
+
+
+```
+
+## Data Analysis
+
+For this part, we will work with an actual dataset.
+
+Load the following dataset:
+
+<https://raw.githubusercontent.com/dblaskey/ML_Course_Code/main/Data/weatherHistory.csv>
+
+```{r load-weather-data}
+weather_df <- read.csv("https://raw.githubusercontent.com/dblaskey/ML_Course_Code/main/Data/weatherHistory.csv")
+```
+
+It is usually best practice to keep a raw copy of the original data unless the dataset is exceptionally large. Create a copy of the dataset.
+
+```{r copy-weather-data}
+raw_weather_df <- weather_df
+```
+
+Clean the column names of the data frame:
+
+1.  Remove spaces at the beginning and end of each column name.
+2.  Convert all column names to lowercase.
+3.  Replace any group of characters that is not a letter or number with an underscore.
+4.  Remove underscores from the beginning and end.
+
+```{r clean-column-names}
+names(weather_df)
+
+names(weather_df) <- names(weather_df) |>
+  trimws() |> #i dont see any spaces
+  tolower() |>
+  gsub("[^a-z0-9]+", "_", x = _) |>
+  gsub("^_+|_+$", "", x = _)
+
+names(weather_df)
+```
+
+Now that you have cleaned the column names, it is time to understand and clean the dataset:
+
+1.  Notice there seems to be a typo in a column heading. Change `loud_cover` to `cloud_cover`.
+2.  Check for impossible data, such as precipitation, wind speed, visibility, cloud cover, or pressure below 0, and any variable outside reasonable earthly maximum and minimum values.
+3.  Give the count, mean, standard deviation, maximum, and minimum values for each numeric column.
+4.  Count the number of missing values in each column.
+5.  Create a new column that converts `formatted_date` to a date-time value.
+6.  Create new columns for hour, day, month, and year.
+
+```{r clean-weather-data}
+colnames(weather_df)[colnames(weather_df) == "loud_cover"] <- "cloud_cover"  
+
+summary(weather_df) #cloud cover all 0s 
+#no negatives except for temperature, which is good, other values seem earthly.
+
+summary_values <- weather_df %>%
+  select_if(is.numeric) %>%
+  summarize(across(
+ everything(),
+          list(
+        count = ~sum(!is.na(.)),
+        mean  = ~mean(., na.rm = TRUE),
+        sd    = ~sd(., na.rm = TRUE),
+        max   = ~max(., na.rm = TRUE),
+        min   = ~min(., na.rm = TRUE)
+      ),
+      .names = "{.col}_{.fn}"
+  )
+  )
+
+
+summary_values <- pivot_longer(summary_values,cols = colnames(summary_values),
+    names_to = c("column")
+    )
+summary_values
+
+missing_values <- weather_df %>%
+  select_if(is.numeric) %>%
+  summarize(
+    across(
+      everything(),
+      ~sum(is.na(.)),
+      .names = "{.col}_n_NAs"
+    )
+  )
+
+missing_values # no missing values 
+
+weather_df$formatted_date <- as_datetime(weather_df$formatted_date)
+weather_df$hour <- hour(weather_df$formatted_date)
+weather_df$day <- day(weather_df$formatted_date) # day of month 
+weather_df$month <- month(weather_df$formatted_date)
+weather_df$year <- year(weather_df$formatted_date)
+
+head(weather_df)
+```
+
+Now create multiple plots to continue exploring the dataset:
+
+1.  Plot a time-series graph of wind speed.
+2.  Create a second time-series graph of air temperature and humidity using two different axes.
+3.  Plot daily average temperature by calendar date; for example, average all January 1 observations, all January 2 observations, and so on.
+4.  Make the plots polished and readable.
+
+```{r weather-plots}
+# wind vs time 
+weather_df_oneDay <- weather_df %>%
+  filter(month==7, day == 2, year == 2006)
+ggplot()+
+  geom_line(data=weather_df_oneDay, aes(x=formatted_date, y=wind_speed_km_h))+
+  ylab("Wind speed (km per h)")+
+  xlab("Time of day")+ # i think this is UTC time
+  theme_bw()
+
+#humidity of july month 
+weather_df_oneMonth <- weather_df %>%
+  filter(month==7, year == 2006, hour == 8 ) %>%
+  ungroup()
+
+ggplot(data=weather_df_oneMonth)+
+  geom_line(aes(x=day, y=humidity))+
+  ylab("humidity")+
+  xlab("day of the month")+
+labs(title="Humidity at 8am in July 2006")+
+  theme_bw()
+
+#airtemp of 2006 summer months at 8am 
+weather_df_coupleMonths <- weather_df %>%
+  filter(month %in% c(5:9), year==2006, hour == 8 ) %>%
+  ungroup()
+
+ggplot(data=weather_df_coupleMonths)+
+  geom_line(aes(x=formatted_date, y=temperature_c))+
+  labs(title="2006 summer months air temp at 8am")
+  ylab("Air temperature (degrees C)")+
+  theme_bw()
+
+
+
+
+weather_df_daily_mean_temp <- weather_df %>%
+  select(day, month, temperature_c) %>%
+  group_by(month, day)%>%
+  summarize(mean_temp = mean(temperature_c, na.rm=TRUE))
+
+weather_df_daily_mean_temp<- weather_df_daily_mean_temp %>% 
+  mutate(
+    fake_date = as.Date(sprintf("%04d-%02d-%02d", 2026, month, day))
+  )
+
+ggplot(data= weather_df_daily_mean_temp)+
+  geom_point(aes(x=fake_date, y=mean_temp))+
+  ylab("Mean daily temperature (degrees C)")+
+  xlab("")+
+  scale_x_date(  date_breaks = "1 month",
+  date_labels = "%b")+
+  theme_bw()
+
+```
+
+## Rubric
+
+| Component             | Points |
+|:----------------------|-------:|
+| Warm up               |      5 |
+| Load and copy data    |      2 |
+| Clean column names    |      3 |
+| Clean dataset         |      6 |
+| Plots (3 points each) |      9 |
+| **Total**             | **25** |
